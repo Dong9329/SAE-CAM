@@ -27,25 +27,7 @@
 
 # :blue_book:Dependencies
 ---
-```
-python==3.6.13
-scipy==1.5.3
-tqdm==4.63.0
-yacs==0.1.8
-pyyaml==6.0.1
-requests==2.27.1
-protobuf==3.19.6
-torch==1.10.2+cu113
-opencv==4.5.3
-pillow==6.2.2
-matplotlib==3.3.4
-scikit-learn==0.24.2
-torchvision==0.11.3+cu113
-torchaudio==0.10.2+cu113
-torch-geometric==2.0.3
-numpy==1.19.5
-pandas==1.1.5
-```
+**Please refer to the **environment.yml** file in the project for environment dependencies.**
 # :blue_book:Data preparation
 ---
 
