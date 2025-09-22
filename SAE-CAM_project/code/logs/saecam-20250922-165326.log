@@ -1,2 +1,0 @@
-[16:55:17] INFO: Epoch 1: train_loss=nan, val_acc=1.0000
-[16:55:17] INFO: 模型已保存: outputs/saecam_pubd.pt
