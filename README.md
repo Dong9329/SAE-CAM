@@ -38,12 +38,20 @@
 **The dataset is publicly available and can be downloaded from the following link: [PUBD](https://drive.google.com/file/d/1jOI2_CYpYlEuvMh1d8AHVJ0qwJq1gY4S/view?usp=drive_link)**
 
 
-# 📄Train
+# 📄 Train
 ---
-The paper is under review and now needs to be kept confidential.
+Run the following command to start training:
+
+bash
+python code/main.py --data-root "path/to/your/dataset" --epochs xx --batch-size xx
+
+
 # 📄Evaluation
 ---
-The paper is under review and now needs to be kept confidential.
+During training, the model is automatically evaluated on the validation set after each epoch.
+Training logs and evaluation results will be printed in the console and saved to the outputs/ directory.
+
+
 # 📄Acknowledgment
 ---
 The paper is under review and now needs to be kept confidential.
