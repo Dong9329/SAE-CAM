@@ -1,41 +1,82 @@
-
 from __future__ import annotations
-import torch
-from torch import nn
+kernel_num: int = 5, fix_sigma: float | None = None) -> torch.Tensor:
+"""Gaussian-kernel MMD (used for working-condition alignment)."""
+n = x.size(0)
+total = torch.cat([x, y], dim=0)
+total0 = total.unsqueeze(0).expand(total.size(0), total.size(0), total.size(1))
+total1 = total.unsqueeze(1).expand(total.size(0), total.size(0), total.size(1))
+L2 = ((total0 - total1) ** 2).sum(2)
+if fix_sigma:
+bw = fix_sigma
+else:
+bw = torch.sum(L2.detach()) / (n * n - n)
+bw /= kernel_mul ** (kernel_num // 2)
+bws = [bw * (kernel_mul ** i) for i in range(kernel_num)]
+kernels = [torch.exp(-L2 / b) for b in bws]
+K = sum(kernels)
+XX, YY, XY, YX = K[:n, :n], K[n:, n:], K[:n, n:], K[n:, :n]
+return (XX.mean() + YY.mean() - XY.mean() - YX.mean())
 
-class SupConLoss(nn.Module):
-    """Supervised Contrastive Loss (Khosla et al. 2020) simplified."""
-    def __init__(self, temperature: float=0.07):
-        super().__init__()
-        self.t = temperature
-    def forward(self, z: torch.Tensor, y: torch.Tensor):
-        # z: [B, D]; y: [B]
-        z = torch.nn.functional.normalize(z, dim=1)
-        sim = z @ z.t() / self.t                       # [B,B]
-        labels = y.unsqueeze(0) == y.unsqueeze(1)      # [B,B]
-        mask = torch.eye(z.shape[0], device=z.device, dtype=torch.bool)
-        sim = sim.masked_fill(mask, -1e9)
-        # for each i, logsumexp negatives
-        logsumexp_neg = torch.logsumexp(sim.masked_fill(labels, -1e9), dim=1)
-        pos = sim.masked_fill(~labels, -1e9)
-        pos_exp = torch.logsumexp(pos, dim=1)
-        loss = -(pos_exp - logsumexp_neg).mean()
-        return loss
 
-def mmd_loss(x: torch.Tensor, y: torch.Tensor, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
-    """MMD with Gaussian kernel (optional, unused by default)."""
-    n = x.size(0)
-    total = torch.cat([x, y], dim=0)
-    total0 = total.unsqueeze(0).expand(total.size(0), total.size(0), total.size(1))
-    total1 = total.unsqueeze(1).expand(total.size(0), total.size(0), total.size(1))
-    L2_distance = ((total0-total1)**2).sum(2)
-    if fix_sigma:
-        bandwidth = fix_sigma
-    else:
-        bandwidth = torch.sum(L2_distance.data) / (n**2 - n)
-    bandwidth /= kernel_mul ** (kernel_num // 2)
-    bandwidth_list = [bandwidth * (kernel_mul**i) for i in range(kernel_num)]
-    kernels = [torch.exp(-L2_distance / bw) for bw in bandwidth_list]
-    kernel_sum = sum(kernels)
-    XX = kernel_sum[:n, :n]; YY = kernel_sum[n:, n:]; XY = kernel_sum[:n, n:]; YX = kernel_sum[n:, :n]
-    return torch.mean(XX + YY - XY - YX)
+
+
+class OrthogonalityLoss(nn.Module):
+"""Explicit orthogonality constraint between shared & private features."""
+def __init__(self, reduction: str = "mean") -> None:
+super().__init__()
+self.reduction = reduction
+
+
+def forward(self, shared: torch.Tensor, private: torch.Tensor) -> torch.Tensor:
+# Penalize correlation via squared cosine similarity
+s = torch.nn.functional.normalize(shared, dim=-1)
+p = torch.nn.functional.normalize(private, dim=-1)
+cos = (s * p).sum(-1).pow(2)
+if self.reduction == "mean":
+return cos.mean()
+return cos.sum()
+
+
+
+
+class StageAwareRedundancy(nn.Module):
+"""Proxy for Eq.(11)-(13): penalize redundant similarity with stage-aware λ(t).
+
+
+Args:
+base: λ_base
+cap: upper bound (stability guard)
+"""
+def __init__(self, base: float = 0.2, cap: float = 3.0) -> None:
+super().__init__()
+self.base = base
+self.cap = cap
+
+
+@staticmethod
+def _stage_weights(mu_delta: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+# Fuzzy stage membership (Gaussian bumps; constants from paper text)
+q_early = torch.exp(-((mu_delta - 0.005) ** 2) / (0.002 ** 2))
+q_mid = torch.exp(-((mu_delta - 0.03) ** 2) / (0.01 ** 2))
+q_late = torch.exp(-((sigma - 0.08) ** 2) / (0.03 ** 2))
+# λ(t) = λ_base*(1 + 2*q_late - 0.5*q_early)
+lam = 1.0 + 2.0 * q_late - 0.5 * q_early
+return lam.clamp(0.5, 3.0), q_early, q_mid, q_late
+
+
+def forward(self, z_v: torch.Tensor, z_c: torch.Tensor,
+mu_delta: torch.Tensor, sigma: torch.Tensor) -> Dict[str, torch.Tensor]:
+# Contrastive-style redundancy metric using InfoNCE denominator
+# Build pairwise similarity across batch (proxy for cross-modal redundancy)
+zv = torch.nn.functional.normalize(z_v, dim=-1)
+zc = torch.nn.functional.normalize(z_c, dim=-1)
+sim_pos = (zv * zc).sum(-1) # [B]
+# Negative bag: in-batch others (stop-grad to stabilize)
+sim_neg = zv @ zc.detach().t() # [B,B]
+eye = torch.eye(zv.size(0), device=zv.device, dtype=torch.bool)
+neg_logsumexp = torch.logsumexp(sim_neg.masked_fill(eye, -1e9), dim=1)
+raw = (neg_logsumexp - sim_pos).clamp_max(self.cap).mean()
+lam, q_e, q_m, q_l = self._stage_weights(mu_delta, sigma)
+loss = (self.base * lam.detach() * raw).mean()
+return {"loss": loss, "lambda": lam.mean().detach(), "q_early": q_e.mean().detach(),
+"q_mid": q_m.mean().detach(), "q_late": q_l.mean().detach()}
